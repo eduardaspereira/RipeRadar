@@ -40,3 +40,5 @@ Modelo de machine learning treinado e serializado com joblib.
 Usado em inferencia online no live_preditor.py.
 Evita novo treino sempre que o sistema e iniciado.
 
+Fonte github Datasets: https://github.com/Horea94/Fruit-Images-Dataset/tree/master/Test/  
+Fonte kaggle Datasets: https://www.kaggle.com/datasets/moltean/fruits/code  
