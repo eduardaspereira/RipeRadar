@@ -42,3 +42,10 @@ Evita novo treino sempre que o sistema e iniciado.
 
 Fonte github Datasets: https://github.com/Horea94/Fruit-Images-Dataset/tree/master/Test/  
 Fonte kaggle Datasets: https://www.kaggle.com/datasets/moltean/fruits/code  
+
+
+terminal1: mosquitto_sub -h localhost -t riperadar/telemetry -v
+terminal2: python3 fusion.py
+terminal3: 
+sudo systemctl start nodered
+sudo systemctl enable nodered
