@@ -1,0 +1,1 @@
+pip install streamlit influxdb-client pandas plotly paho-mqtt
