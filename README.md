@@ -1,8 +1,8 @@
-- sem mqtt
-
+- Feito: com mqtt
 - diminuir a freq medicao do nicla sense me
-- Feito: perceber se sao necessarias timestamps: não pk o ncila e o arduino enviam ao msm tempo
+- Feito: perceber se sao necessarias timestamps: não pk o nicla e o arduino enviam ao msm tempo
 - Feito: tentar imagem apenas usb irt, tipo edge impulse > live classification
 - falta late fusion (e possivelmente % de todas as frutas)
 - mudar nome BLE Riperadar -> nicla sense me 
 - testar com frutas 
+- ver se é o codigo mais recente 
