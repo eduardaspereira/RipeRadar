@@ -1,1 +1,1 @@
-pip install streamlit influxdb-client pandas plotly paho-mqtt
+pip install streamlit influxdb-client pandas plotly paho-mqtt pyserial python-dotenv bleak

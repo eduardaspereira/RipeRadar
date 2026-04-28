@@ -17,7 +17,7 @@
 /* Includes ---------------------------------------------------------------- */
 #include <ripe-radar2_inferencing.h>
 #include <Arduino_OV767X.h> //Click here to get the library: https://www.arduino.cc/reference/en/libraries/arduino_ov767x/
-#include <ArduinoBLE.h>
+
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -25,13 +25,16 @@
 #define EI_CAMERA_RAW_FRAME_BUFFER_COLS     160
 #define EI_CAMERA_RAW_FRAME_BUFFER_ROWS     120
 
+// --- ADIÇÃO: Bibliotecas e Definições BLE ---
+#include <ArduinoBLE.h> 
+
+// Define o serviço e a característica BLE (tamanho máximo de 128 bytes para o JSON)
+BLEService jsonService("19B10000-E8F2-537E-4F6C-D104768A1214"); 
+BLEStringCharacteristic jsonChar("19B10011-E8F2-537E-4F6C-D104768A1214", BLERead | BLENotify, 128);
+// --------------------------------------------
+
 #define DWORD_ALIGN_PTR(a)   ((a & 0x3) ?(((uintptr_t)a + 0x4) & ~(uintptr_t)0x3) : a)
 
-// Define um UUID único para o Serviço e para a Característica
-BLEService inferenceService("19B10000-E8F2-537E-4F6C-D104768A1214");
-// Permite ler e notifica automaticamente sempre que o valor muda. Tamanho máximo de 100 caracteres.
-BLEStringCharacteristic probCharacteristic("19B10001-E8F2-537E-4F6C-D104768A1214", BLERead | BLENotify, 200); 
-// -----------------------------------
 /*
  ** NOTE: If you run into TFLite arena allocation issue.
  **
@@ -84,8 +87,8 @@ class OV7675 : public OV767X {
 };
 
 typedef struct {
-	size_t width;
-	size_t height;
+    size_t width;
+    size_t height;
 } ei_device_resize_resolutions_t;
 
 /**
@@ -128,162 +131,123 @@ bool ei_camera_capture(uint32_t img_width, uint32_t img_height, uint8_t *out_buf
 int calculate_resize_dimensions(uint32_t out_width, uint32_t out_height, uint32_t *resize_col_sz, uint32_t *resize_row_sz, bool *do_resize);
 void resizeImage(int srcWidth, int srcHeight, uint8_t *srcImage, int dstWidth, int dstHeight, uint8_t *dstImage, int iBpp);
 void cropImage(int srcWidth, int srcHeight, uint8_t *srcImage, int startX, int startY, int dstWidth, int dstHeight, uint8_t *dstImage, int iBpp);
-int ei_camera_cutout_get_data(size_t offset, size_t length, float *out_ptr);
+
 /**
-* @brief      Arduino setup function
-*/
+ * @brief  Arduino setup function
+ */
 void setup()
 {
-    // put your setup code here, to run once:
     Serial.begin(115200);
-    // comment out the below line to cancel the wait for USB connection (needed for native USB)
-    //while (!Serial);
-    Serial.println("Edge Impulse Inferencing Demo");
+    Serial.println("Edge Impulse Inferencing Demo - BLE Lote (Connect-and-Dump)");
 
-    // --- INICIAR BLE ---
-    if (!BLE.begin()) {
-        Serial.println("Erro ao iniciar o Bluetooth!");
-        while (1); // Pára aqui se houver erro
-    }
-
-    BLE.setLocalName("Nano_Camera"); // O nome que vai aparecer no telemóvel
-    BLE.setAdvertisedService(inferenceService);
-    inferenceService.addCharacteristic(probCharacteristic);
-    BLE.addService(inferenceService);
-    
-    // Valor inicial vazio
-    probCharacteristic.writeValue(""); 
-    
-    BLE.advertise();
-    Serial.println("Bluetooth ativo. À espera de conexões...");
-    // -------------------
-
-
-    // summary of inferencing settings (from model_metadata.h)
     ei_printf("Inferencing settings:\n");
     ei_printf("\tImage resolution: %dx%d\n", EI_CLASSIFIER_INPUT_WIDTH, EI_CLASSIFIER_INPUT_HEIGHT);
     ei_printf("\tFrame size: %d\n", EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE);
     ei_printf("\tNo. of classes: %d\n", sizeof(ei_classifier_inferencing_categories) / sizeof(ei_classifier_inferencing_categories[0]));
+
+    // Iniciar a Câmara
+    if (ei_camera_init() == false) {
+        ei_printf("ERR: Failed to initialize image sensor. Para a execucao.\r\n");
+        while (1);
+    }
+    ei_printf("Camara inicializada com sucesso!\n");
+
+    // Iniciar BLE
+    if (!BLE.begin()) {
+        ei_printf("Falha ao iniciar o modulo BLE!\n");
+        while (1);
+    }
+  
+    BLE.setLocalName("Arduino33"); 
+    BLE.setAdvertisedService(jsonService);
+    jsonService.addCharacteristic(jsonChar);
+    BLE.addService(jsonService);
+    BLE.advertise();
+    ei_printf("[INFO] BLE ativo. A aguardar ligacao do Gateway...\n");
 }
 
 /**
-* @brief      Get data and run inferencing
-*
-* @param[in]  debug  Get debug info if true
-*/
+ * @brief  Get data and run inferencing
+ */
 void loop()
 {
-    // Ouve constantemente à procura de pedidos de ligação do Raspberry Pi
-    BLE.poll(); 
-    BLEDevice central = BLE.central();
+    // 1. DESLIGA O BLE PARA A CÂMARA NÃO SUFOCAR O RÁDIO
+    BLE.disconnect();
+    BLE.stopAdvertise();
 
-    // SE O RASPBERRY PI SE CONECTAR...
-    if (central && central.connected()) {
-        Serial.print("Raspberry Pi conectado: ");
-        Serial.println(central.address());
-        
-        Serial.println("A aguardar que o Pi configure o rádio (Subscrição)...");
-
-        // --- O SEGREDO ESTÁ AQUI ---
-        // Mantém o Arduino num ciclo rápido e focado 100% no Bluetooth 
-        // até o script Python conseguir fazer o `start_notify()` com sucesso.
-        while (central.connected() && !probCharacteristic.subscribed()) {
-            BLE.poll();
-            delay(10); 
-        }
-
-        // Se saiu do ciclo acima e ainda está conectado, é porque o Pi subscreveu!
-        if (central.connected() && probCharacteristic.subscribed()) {
-            Serial.println("Subscrição confirmada! A iniciar a câmara e IA...");
-
-            // Continua a tirar fotos em ciclo APENAS enquanto o Pi estiver ligado
-            while (central.connected()) {
-                
-                // Pequena pausa para a câmara respirar (reduzi de 2s para 500ms para ser mais rápido)
-                unsigned long start_time = millis();
-                while (millis() - start_time < 500) {
-                    BLE.poll(); 
-                    delay(50);
-                }
-
-                ei_printf("\nTaking photo...\n");
-
-                if (ei_camera_init() == false) {
-                    ei_printf("ERR: Failed to initialize image sensor\r\n");
-                    break;
-                }
-
-                // Prepara a memória para a foto
-                uint32_t resize_col_sz;
-                uint32_t resize_row_sz;
-                bool do_resize = false;
-                calculate_resize_dimensions(EI_CLASSIFIER_INPUT_WIDTH, EI_CLASSIFIER_INPUT_HEIGHT, &resize_col_sz, &resize_row_sz, &do_resize);
-                
-                void *snapshot_mem = ei_malloc(resize_col_sz * resize_row_sz * 2);
-                if(snapshot_mem == NULL) {
-                    ei_printf("failed to create snapshot_mem\r\n");
-                    break;
-                }
-                uint8_t *snapshot_buf = (uint8_t *)DWORD_ALIGN_PTR((uintptr_t)snapshot_mem);
-
-                BLE.poll(); // Sinal de vida antes de capturar a imagem
-
-                if (ei_camera_capture(EI_CLASSIFIER_INPUT_WIDTH, EI_CLASSIFIER_INPUT_HEIGHT, snapshot_buf) == false) {
-                    ei_printf("Failed to capture image\r\n");
-                    if (snapshot_mem) ei_free(snapshot_mem);
-                    break;
-                }
-
-                ei::signal_t signal;
-                signal.total_length = EI_CLASSIFIER_INPUT_WIDTH * EI_CLASSIFIER_INPUT_HEIGHT;
-                signal.get_data = &ei_camera_cutout_get_data;
-                ei_impulse_result_t result = { 0 };
-
-                BLE.poll(); // Sinal de vida vital antes dos 600ms de bloqueio da IA
-
-                // Executa a rede neuronal
-                EI_IMPULSE_ERROR ei_error = run_classifier(&signal, &result, debug_nn);
-
-                BLE.poll(); // Recuperar o fôlego imediatamente a seguir
-
-                if (ei_error != EI_IMPULSE_OK) {
-                    ei_printf("Failed to run impulse (%d)\n", ei_error);
-                    if (snapshot_mem) ei_free(snapshot_mem);
-                    break;
-                }
-
-                // Construir pacote compacto
-                String bleData = ""; 
-                for (uint16_t i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
-                    int percentagem = (int)(result.classification[i].value * 100);
-                    bleData += String(percentagem);
-                    if (i < EI_CLASSIFIER_LABEL_COUNT - 1) {
-                        bleData += ",";
-                    }
-                }
-                
-                // Envia para o Raspberry Pi
-                probCharacteristic.writeValue(bleData);
-                Serial.print("Enviado para BLE: ");
-                Serial.println(bleData);
-                
-                // Garante que o rádio envia os dados antes de desligar a câmara
-                for(int i=0; i<5; i++) {
-                    BLE.poll();
-                    delay(20);
-                }
-
-                if (snapshot_mem) ei_free(snapshot_mem);
-                ei_camera_deinit(); // Desliga a câmara para arrefecer até à próxima foto
-            }
-        }
-        
-        Serial.println("\nRaspberry Pi desconectado. A adormecer câmara...");
+    // 2. TIRAR FOTO E CORRER INFERÊNCIA
+    if (ei_camera_init() == false) {
+        ei_printf("ERR: Failed to initialize image sensor\r\n");
+        return;
     }
-    else {
-        delay(100);
+
+    uint32_t resize_col_sz, resize_row_sz;
+    bool do_resize = false;
+    calculate_resize_dimensions(EI_CLASSIFIER_INPUT_WIDTH, EI_CLASSIFIER_INPUT_HEIGHT, &resize_col_sz, &resize_row_sz, &do_resize);
+
+    void *snapshot_mem = ei_malloc(resize_col_sz * resize_row_sz * 2);
+    if(snapshot_mem == NULL) return;
+    uint8_t *snapshot_buf = (uint8_t *)DWORD_ALIGN_PTR((uintptr_t)snapshot_mem);
+
+    if (ei_camera_capture(EI_CLASSIFIER_INPUT_WIDTH, EI_CLASSIFIER_INPUT_HEIGHT, snapshot_buf) == false) {
+        ei_free(snapshot_mem);
+        return;
+    }
+
+    ei::signal_t signal;
+    signal.total_length = EI_CLASSIFIER_INPUT_WIDTH * EI_CLASSIFIER_INPUT_HEIGHT;
+    signal.get_data = &ei_camera_cutout_get_data;
+
+    ei_impulse_result_t result = { 0 };
+    run_classifier(&signal, &result, debug_nn);
+
+    float max_val = 0.0;
+    const char* max_label = "indefinido";
+    for (uint16_t i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
+        if (result.classification[i].value > max_val) {
+            max_val = result.classification[i].value;
+            max_label = ei_classifier_inferencing_categories[i];
+        }
+    }
+
+    // 3. PREPARAR DADOS
+    String jsonPayload = "{\n  \"classe_dominante\": \"";
+    jsonPayload += max_label;
+    jsonPayload += "\",\n  \"confianca\": ";
+    jsonPayload += String(max_val, 2);
+    jsonPayload += "\n}";
+
+    ei_free(snapshot_mem);
+
+    // 4. LIGAR BLE E ENVIAR ASSIM QUE O PI SE CONECTAR E SUBSCREVER
+    BLE.advertise();
+    // ei_printf("Visao pronta. A aguardar Raspberry Pi...\n");
+
+    unsigned long start_time = millis();
+    // Espera até 10 segundos que o Pi se ligue
+    while (millis() - start_time < 10000) {
+        BLEDevice central = BLE.central();
+        if (central && central.connected()) {
+            
+            // O Pi ligou-se! Agora esperamos que ele "descubra os serviços" (GATT)
+            unsigned long conn_time = millis();
+            while (central.connected() && (millis() - conn_time < 4000)) {
+                
+                // Assim que o Pi estiver pronto e subscrever a notificação, disparamos!
+                if (jsonChar.subscribed()) {
+                    jsonChar.writeValue(jsonPayload);
+                    ei_printf("Visao enviada: %s (%.2f)\n", max_label, max_val);
+                    delay(500); // Meio segundo para garantir que o rádio envia o pacote com sucesso
+                    break;      // Sai da espera de subscrição
+                }
+                delay(10);
+            }
+            break; // Sai do ciclo de procura para reiniciar o loop (que vai fazer o BLE.disconnect pacífico)
+        }
+        delay(10);
     }
 }
+
 /**
  * @brief      Determine whether to resize and to which dimension
  *
@@ -317,9 +281,9 @@ int calculate_resize_dimensions(uint32_t out_width, uint32_t out_height, uint32_
 }
 
 /**
- * @brief   Setup image sensor & start streaming
+ * @brief  Setup image sensor & start streaming
  *
- * @retval  false if initialisation failed
+ * @retval false if initialisation failed
  */
 bool ei_camera_init(void) {
     if (is_initialised) return true;
@@ -349,7 +313,7 @@ void ei_camera_deinit(void) {
  * @param[in]  img_width     width of output image
  * @param[in]  img_height    height of output image
  * @param[in]  out_buf       pointer to store output image, NULL may be used
- *                           when full resolution is expected.
+ * when full resolution is expected.
  *
  * @retval     false if not initialised, image captured, rescaled or cropped failed
  *
@@ -727,7 +691,7 @@ void OV7675::readFrame(void* buffer)
     allocate_scratch_buffs();
 
     uint8_t* out = (uint8_t*)buffer;
-    //noInterrupts();
+    noInterrupts();
 
     // Falling edge indicates start of frame
     while ((*vsyncPort & vsyncMask) == 0); // wait for HIGH
@@ -747,7 +711,7 @@ void OV7675::readFrame(void* buffer)
         out_row += resize_col_sz * resize_height * bytes_per_pixel; /* resize_col_sz * 2 * 2 */
     }
 
-    //interrupts();
+    interrupts();
 
     deallocate_scratch_buffs();
 } /* OV7675::readFrame() */
